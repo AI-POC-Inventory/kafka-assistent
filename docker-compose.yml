@@ -1,0 +1,153 @@
+version: '3.8'
+
+services:
+  # Kafka Infrastructure
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:7.5.0
+    depends_on:
+      - kafka
+    ports:
+      - "8081:8081"
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'kafka:29092'
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+
+  # Monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+
+  # Vector Store
+  chromadb:
+    image: chromadb/chroma:latest
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/chroma
+
+  # MCP Servers
+  mcp-kafka-admin:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp
+    environment:
+      MCP_SERVER_TYPE: kafka_admin
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    ports:
+      - "8001:8001"
+    depends_on:
+      - kafka
+
+  mcp-metrics:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp
+    environment:
+      MCP_SERVER_TYPE: metrics
+      PROMETHEUS_URL: http://prometheus:9090
+    ports:
+      - "8003:8003"
+    depends_on:
+      - prometheus
+
+  mcp-streaming:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.mcp
+    environment:
+      MCP_SERVER_TYPE: streaming
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+    ports:
+      - "8004:8004"
+    depends_on:
+      - kafka
+
+  # ADK Agents
+  adk-kafka-admin:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.adk
+    environment:
+      AGENT_TYPE: kafka_admin
+      MCP_KAFKA_ADMIN_URL: http://mcp-kafka-admin:8001
+      MCP_STREAMING_URL: http://mcp-streaming:8004
+    ports:
+      - "8011:8011"
+    depends_on:
+      - mcp-kafka-admin
+      - mcp-streaming
+
+  adk-schema-metrics:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.adk
+    environment:
+      AGENT_TYPE: schema_metrics
+      MCP_METRICS_URL: http://mcp-metrics:8003
+      VECTOR_STORE_URL: http://chromadb:8000
+    ports:
+      - "8012:8012"
+    depends_on:
+      - mcp-metrics
+      - chromadb
+
+  # Orchestrator
+  orchestrator:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.orchestrator
+    environment:
+      KAFKA_ADMIN_AGENT_URL: http://adk-kafka-admin:8011
+      SCHEMA_METRICS_AGENT_URL: http://adk-schema-metrics:8012
+      RANGER_URL: ${RANGER_URL}
+    ports:
+      - "8020:8020"
+    depends_on:
+      - adk-kafka-admin
+      - adk-schema-metrics
+
+  # Schema Sync Job
+  schema-sync:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.schema-sync
+    environment:
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      VECTOR_STORE_URL: http://chromadb:8000
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-3600}
+    depends_on:
+      - schema-registry
+      - chromadb
+
+volumes:
+  prometheus_data:
+  chroma_data:
