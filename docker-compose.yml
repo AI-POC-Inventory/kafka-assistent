@@ -1,153 +1,190 @@
-version: '3.8'
+version: "3.9"
 
 services:
-  # Kafka Infrastructure
-  zookeeper:
-    image: confluentinc/cp-zookeeper:7.5.0
-    environment:
-      ZOOKEEPER_CLIENT_PORT: 2181
-      ZOOKEEPER_TICK_TIME: 2000
-    ports:
-      - "2181:2181"
-
+  # ==============================
+  # CORE INFRASTRUCTURE
+  # ==============================
   kafka:
     image: confluentinc/cp-kafka:7.5.0
-    depends_on:
-      - zookeeper
+    container_name: kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+
+      # Controller listener
+      KAFKA_LISTENERS: PLAINTEXT://kafka:9092,CONTROLLER://kafka:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+
+      # Storage directories
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+
+      # Required Kafka internal settings for KRaft
+      CLUSTER_ID: "mkraft-cluster-01"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
     ports:
       - "9092:9092"
-      - "9101:9101"
-    environment:
-      KAFKA_BROKER_ID: 1
-      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
-      KAFKA_JMX_PORT: 9101
-      KAFKA_JMX_HOSTNAME: localhost
+    volumes:
+      - ./kafka-data:/var/lib/kafka/data
 
   schema-registry:
     image: confluentinc/cp-schema-registry:7.5.0
-    depends_on:
-      - kafka
+    container_name: schema-registry
+    environment:
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:9092
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_LISTENERS: http://schema-registry:8081
     ports:
       - "8081:8081"
-    environment:
-      SCHEMA_REGISTRY_HOST_NAME: schema-registry
-      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: 'kafka:29092'
-      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+    depends_on:
+      - kafka
 
-  # Monitoring
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
-
-  # Vector Store
   chromadb:
     image: chromadb/chroma:latest
-    ports:
-      - "8000:8000"
+    container_name: chromadb
     volumes:
-      - chroma_data:/chroma/chroma
-
-  # MCP Servers
-  mcp-kafka-admin:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.mcp
-    environment:
-      MCP_SERVER_TYPE: kafka_admin
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      - ./vector_store:/data
     ports:
-      - "8001:8001"
-    depends_on:
-      - kafka
+      - "8007:8000"
 
-  mcp-metrics:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.mcp
-    environment:
-      MCP_SERVER_TYPE: metrics
-      PROMETHEUS_URL: http://prometheus:9090
+  prom:
+    image: prom/prometheus
+    container_name: prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
     ports:
-      - "8003:8003"
-    depends_on:
-      - prometheus
+      - "9090:9090"
 
-  mcp-streaming:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.mcp
+  ranger:
+    image: apache/ranger:latest
+    container_name: ranger
     environment:
-      MCP_SERVER_TYPE: streaming
-      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      RANGER_ADMIN_PASSWORD: "admin"
     ports:
-      - "8004:8004"
-    depends_on:
-      - kafka
+      - "6080:6080"
 
-  # ADK Agents
-  adk-kafka-admin:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.adk
+  # ==============================
+  # RAG PIPELINE + SCHEMA SYNC
+  # ==============================
+  rag-pipeline:
+    build: ./rag_pipeline
+    container_name: rag-pipeline
     environment:
-      AGENT_TYPE: kafka_admin
-      MCP_KAFKA_ADMIN_URL: http://mcp-kafka-admin:8001
-      MCP_STREAMING_URL: http://mcp-streaming:8004
-    ports:
-      - "8011:8011"
+      VECTOR_DB_URL: http://chromadb:8000
     depends_on:
-      - mcp-kafka-admin
-      - mcp-streaming
-
-  adk-schema-metrics:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.adk
-    environment:
-      AGENT_TYPE: schema_metrics
-      MCP_METRICS_URL: http://mcp-metrics:8003
-      VECTOR_STORE_URL: http://chromadb:8000
-    ports:
-      - "8012:8012"
-    depends_on:
-      - mcp-metrics
       - chromadb
+      - schema-registry
 
-  # Orchestrator
-  orchestrator:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.orchestrator
-    environment:
-      KAFKA_ADMIN_AGENT_URL: http://adk-kafka-admin:8011
-      SCHEMA_METRICS_AGENT_URL: http://adk-schema-metrics:8012
-      RANGER_URL: ${RANGER_URL}
-    ports:
-      - "8020:8020"
-    depends_on:
-      - adk-kafka-admin
-      - adk-schema-metrics
-
-  # Schema Sync Job
   schema-sync:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.schema-sync
+    build: ./schema_sync
+    container_name: schema-sync
     environment:
       SCHEMA_REGISTRY_URL: http://schema-registry:8081
-      VECTOR_STORE_URL: http://chromadb:8000
-      SYNC_INTERVAL: ${SYNC_INTERVAL:-3600}
+      VECTOR_DB_URL: http://chromadb:8000
     depends_on:
       - schema-registry
       - chromadb
 
-volumes:
-  prometheus_data:
-  chroma_data:
+  # ==============================
+  # MCP SERVERS
+  # ==============================
+  mcp-kafka-admin:
+    build: ./mcp/kafka_admin
+    container_name: mcp-kafka-admin
+    ports:
+      - "9001:9001"
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+    depends_on:
+      - kafka
+
+  mcp-streaming:
+    build: ./mcp/streaming
+    container_name: mcp-streaming
+    ports:
+      - "9004:9004"
+    depends_on:
+      - kafka
+
+  mcp-metrics:
+    build: ./mcp/metrics
+    container_name: mcp-metrics
+    ports:
+      - "9003:9003"
+    environment:
+      PROM_URL: http://prometheus:9090
+    depends_on:
+      - prom
+
+  # ==============================
+  # ADK AGENTS (GOOGLE ADK)
+  # ==============================
+  adk-agent1:
+    build: ./agents/agent1
+    container_name: adk-agent1
+    environment:
+      MCP_ADMIN_URL: http://mcp-kafka-admin:9001
+      MCP_STREAM_URL: http://mcp-streaming:9004
+    ports:
+      - "8020:8020"
+    depends_on:
+      - mcp-kafka-admin
+      - mcp-streaming
+
+  adk-agent2:
+    build: ./agents/agent2
+    container_name: adk-agent2
+    environment:
+      RAG_URL: http://rag-pipeline:7000
+      MCP_METRICS_URL: http://mcp-metrics:9003
+    ports:
+      - "8030:8030"
+    depends_on:
+      - rag-pipeline
+      - mcp-metrics
+
+  # ==============================
+  # ORCHESTRATOR
+  # ==============================
+  orchestrator-adk:
+    build: ./orchestrator/adk
+    container_name: orchestrator-adk
+    environment:
+      A2A_AGENT1_URL: http://adk-agent1:8020
+      A2A_AGENT2_URL: http://adk-agent2:8030
+      RANGER_URL: http://ranger:6080
+    ports:
+      - "8010:8010"
+    depends_on:
+      - adk-agent1
+      - adk-agent2
+      - ranger
+
+  orchestrator-mcp:
+    build: ./orchestrator/mcp
+    container_name: orchestrator-mcp
+    ports:
+      - "8005:8005"
+    environment:
+      ORCHESTRATOR_ADK_URL: http://orchestrator-adk:8010
+    depends_on:
+      - orchestrator-adk
+
+  # ==============================
+  # LIBRECHAT
+  # ==============================
+  librechat:
+    image: ghcr.io/librechat/librechat:latest
+    container_name: librechat
+    volumes:
+      - ./librechat:/app/data
+    ports:
+      - "3000:3000"
+    depends_on:
+      - orchestrator-mcp

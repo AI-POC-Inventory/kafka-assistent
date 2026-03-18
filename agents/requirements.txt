@@ -5,4 +5,4 @@ requests
 pydantic
 python-dotenv
 google-generativeai
-google-ai-agent-sdk
+google-adk
