@@ -13,9 +13,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StreamableHTTPConnecti
 from mcp import StdioServerParameters
 import logging
 logging.getLogger().setLevel(logging.ERROR)
-os.environ["GOOGLE_API_KEY"] = "AIzaSyDs1INsiDMOqeAgxIUiEsPik-NAUoKuW9U"
-#"AIzaSyAuZdO93rvHdxbYtAXs_cNZM9bfeYqh1oE"
-#AIzaSyDs1INsiDMOqeAgxIUiEsPik-NAUoKuW9U
+os.environ["GOOGLE_API_KEY"] = ""
 # --- Step 1: Agent Definition ---
 
 import warnings
