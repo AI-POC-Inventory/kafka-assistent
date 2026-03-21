@@ -19,6 +19,7 @@ import uvicorn
 import os
 
 port = int(os.environ.get("PORT", 8080))
+os.environ["GOOGLE_API_KEY"] = ""
 
 logging.getLogger().setLevel(logging.INFO)
 
@@ -50,9 +51,9 @@ def getAgent():
         tools=[toolset],
     )
 
-    return agent
+    return agent,toolset
 
-agent = getAgent()
+agent,toolset = getAgent()
 
 app = to_a2a(agent,port=int(os.environ.get("PORT", 8080))) 
 # --- Main entrypoint ---
