@@ -1,0 +1,44 @@
+{
+  "capabilities": {
+    "tools": [
+        {
+          "name": "create_topicss",
+          "description": "Create a Kafka topic with specified parameters.",
+          "parameters": {"topic_name": "string", "partitions": "integer", "replication_factor": "integer"}
+        }
+      ]
+    },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "An ADK Agent",
+  "name": "enterprise_kafka_assistant",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.3.0",
+  "skills": [
+    {
+      "description": "\n            I am a Kafka operations assistant for kafka admin operation.\n            Always use MCP tools for Kafka operations.\n            Extract relevant parameters from user queries to determine\n            which Kafka MCP tool to use.\n            Please ask the user for any missing parameters required for the tools.\n            Do not guess results—only respond with actual tool output.\n\n        ",
+      "examples": [],
+      "id": "enterprise_kafka_assistant",
+      "name": "model",
+      "tags": [
+        "llm"
+      ]
+    },
+    {
+      "description": "\n    Create a Kafka topic.\n\n    Args:\n        topic_name (str): Name of the topic\n        partitions (int): Number of partitions\n        replication_factor (int): Replication factor\n\n    Returns:\n        dict: status or error\n    ",
+      "id": "enterprise_kafka_assistant-create_topics",
+      "name": "create_topics",
+      "tags": [
+        "llm",
+        "tools"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "url": "https://kafka-admin-agent-989713142030.asia-south1.run.app",
+  "version": "0.0.1"
+}

@@ -1,0 +1,44 @@
+{
+  "capabilities": {
+    "tools": [
+      {
+        "name": "list_topics",
+        "description": "...",
+        "parameters": {}
+      }
+    ]
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "An ADK Agent",
+  "name": "enterprise_assistant",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.3.0",
+  "skills": [
+    {
+      "description": "\n            I am a Kafka operations assistant for kafka user only.\n            I am not allowed to perform any administrative tasks or provide information about Kafka cluster configuration, security settings, or any other sensitive information.\n            I can only perform operations \n                Kafka topics - such as listing topics, describing topics, and providing information about topic configurations.\n                Kafka consumer groups - such as listing consumer groups, describing consumer groups, and providing information about consumer group offsets.\n                Kafka producers - such as providing information about producer performance and troubleshooting producer issues.\n                 Kafka consumers - such as providing information about consumer performance and troubleshooting consumer issues.\n            Always use MCP tools for Kafka operations.\n            Do not guess responses.\n            ",
+      "examples": [],
+      "id": "enterprise_assistant",
+      "name": "model",
+      "tags": [
+        "llm"
+      ]
+    },
+    {
+      "description": "List Kafka topics",
+      "id": "enterprise_assistant-list_topics",
+      "name": "list_topics",
+      "tags": [
+        "llm",
+        "tools"
+      ]
+    }
+  ],
+  "supportsAuthenticatedExtendedCard": false,
+  "url": "https://kafka-user-agent-989713142030.asia-south1.run.app",
+  "version": "0.0.1"
+}

@@ -1,95 +1,133 @@
 import asyncio
 import json
-from typing import Dict, Any
+import re
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from dotenv import load_dotenv
 
-from google.adk.agents.remote_a2a_agent import RemoteA2aAgent, AGENT_CARD_WELL_KNOWN_PATH
+from google.adk.agents.remote_a2a_agent import RemoteA2aAgent
 from google.adk.agents.llm_agent import LlmAgent
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.genai import types
 
-import os
-import re
-import json
+load_dotenv()
 
-os.environ["GOOGLE_API_KEY"] = ""
-# =============================
-# CONFIG
-# =============================
-MAX_RETRIES = 1
+app = FastAPI()
 
+# =============================
+# REQUEST MODEL
+# =============================
+class QueryRequest(BaseModel):
+    query: str
+
+
+# =============================
+# UTILS
+# =============================
 def extract_json(text: str):
     if not text or text.strip() == "":
         raise ValueError("Empty LLM response")
 
-    # Remove markdown ```json blocks
     text = re.sub(r"```json|```", "", text).strip()
-
-    # Extract first JSON object
     match = re.search(r"\{.*\}", text, re.DOTALL)
+    print("Extracted JSON string:", match.group() if match else "No JSON found")
     if not match:
-        raise ValueError(f"No JSON found in response: {text}")
-    print(f"📝 Extracted JSON: {match.group()}")
+        raise ValueError("No JSON found")
+
     return json.loads(match.group())
 
+
 # =============================
-# SUB AGENTS (FIXED NAMES)
+# AGENTS
 # =============================
 kafka_admin_agent = RemoteA2aAgent(
     name="kafka_admin_agent",
     description="Kafka admin operations",
-    agent_card=f"http://localhost:8080{AGENT_CARD_WELL_KNOWN_PATH}",
+    agent_card="kafka_admin_agent_card.json",
 )
 
 kafka_user_agent = RemoteA2aAgent(
     name="kafka_user_agent",
     description="Kafka read operations",
-    agent_card=f"http://localhost:8000{AGENT_CARD_WELL_KNOWN_PATH}",
+    agent_card="kafka_user_agent_card.json",
 )
 
-# =============================
-# PLANNER AGENT
-# =============================
-PLANNER_PROMPT = """
+def load_agent_capabilities():
+    agents = {
+        "kafka_admin_agent": "kafka_admin_agent_card.json",
+        "kafka_user_agent": "kafka_user_agent_card.json"
+    }
+
+    capabilities = {}
+
+    for agent_name, path in agents.items():
+        with open(path) as f:
+            card = json.load(f)
+
+        tools_list = card.get("capabilities", {}).get("tools", [])
+
+        tools = []
+        for tool in tools_list:
+            tools.append({
+                "name": tool.get("name"),
+                "description": tool.get("description", ""),
+                "parameters": tool.get("parameters", {})
+            })
+
+        capabilities[agent_name] = tools
+
+    print("Loaded agent capabilities:", capabilities)
+    return capabilities
+
+def format_capabilities(capabilities: dict) -> str:
+    text = ""
+
+    for agent, tools in capabilities.items():
+        text += f"\nAgent: {agent}\n"
+        for tool in tools:
+            text += f"- {tool['name']}"
+            if tool.get("description"):
+                text += f": {tool['description']}"
+            text += "\n"
+
+    return text
+all_agent_capabilities = format_capabilities(load_agent_capabilities())
+
+def build_planner_prompt():
+    capabilities = load_agent_capabilities()
+    formatted_caps = format_capabilities(capabilities)
+
+    return f"""
 You are a PLANNER.
 
 Return ONLY valid JSON.
 
-Rules:
+RULES:
 - Break task into steps
-- Check agent card descriptions for kafka_admin_agent and kafka_user_agent to understand capabilities
-- Do not assign steps to agents that cannot perform them. The agent card descriptions are the source of truth for what each agent can do.
-- Map each step to one tool from agentcard of kafka_admin_agent and kafka_user_agent
-- Assign step to agent based on tool
-- Add dependencies
-- Add conditions if needed
+- Assign correct agent and tool based on {formatted_caps} 
+- Use ONLY the tools listed above
+- DO NOT hallucinate tools
 
-Output format:
-{
+OUTPUT FORMAT (STRICT):
+{{
   "steps": [
-    {
+    {{
       "id": 1,
       "description": "...",
       "agent": "...",
-      "message": "...",
+      "message": {{
+        "tool": "...",
+        "kwargs": {{}}
+      }},
       "depends_on": [],
       "condition": null
-    }
+    }}
   ]
-}
+}}
 """
 
-planner = LlmAgent(
-    model="gemini-2.5-flash",
-    name="planner",
-    instruction=PLANNER_PROMPT,
-    sub_agents=[kafka_admin_agent, kafka_user_agent]
-)
-
-# =============================
-# VERIFIER AGENT
-# =============================
 VERIFIER_PROMPT = """
 You are a VERIFIER.
 
@@ -109,6 +147,11 @@ Return JSON:
   "failed_step": optional step id
 }
 """
+planner = LlmAgent(
+    model="gemini-2.5-flash",
+    name="planner",
+    instruction=build_planner_prompt(),
+)
 
 verifier = LlmAgent(
     model="gemini-2.5-flash",
@@ -116,17 +159,17 @@ verifier = LlmAgent(
     instruction=VERIFIER_PROMPT,
 )
 
+
 # =============================
-# ORCHESTRATOR ENGINE
+# ORCHESTRATOR
 # =============================
 class Orchestrator:
-
     def __init__(self):
         self.session_service = InMemorySessionService()
         self.artifacts_service = InMemoryArtifactService()
         self.session = None
         self.app_name = "orchestrator"
-    
+
     async def get_session(self):
         if not self.session:
             self.session = await self.session_service.create_session(
@@ -134,31 +177,29 @@ class Orchestrator:
                 app_name=self.app_name,
                 user_id="user"
             )
-            print(f"🎬 Created new session: {self.session.id}")          
-
         return self.session
-            
+
     async def run(self, query: str):
         session = await self.get_session()
-        print(f"run session: {session.id}")
+        print("Creating execution plan...")
         plan = await self.create_plan(session, query)
-        state = {"results": {}, "retries": {}}
+        print("Execution plan created:", plan)
+        state = {"results": {}}
+        print("Execution plan created:", plan)
 
         for step in plan["steps"]:
+            print(f"Executing step {step['id']} with agent {step['agent']}...")    
             await self.execute_step(session, step, state)
-
+        print("All steps executed. Verifying results...")
         verification = await self.verify(session, plan, state)
 
         if verification["status"] != "SUCCESS":
-            print("⚠️ Replanning triggered...")
-            return await self.run(query)
+            raise Exception("Execution failed after verification")
 
-        return state
+        return state["results"]
 
-    # =============================
-    # PLAN
-    # =============================
     async def create_plan(self, session, query):
+        print("Creating execution plan...")
         runner = Runner(
             app_name=self.app_name,
             agent=planner,
@@ -166,31 +207,32 @@ class Orchestrator:
             session_service=self.session_service,
         )
 
+        print("Running planner agent...")    
         content = types.Content(role="user", parts=[types.Part(text=query)])
-        print(f"🎬 Creating plan for session: {session.id} ")
+        print("Content for planner:", content)
         events = runner.run_async(
             session_id=session.id,
             user_id=session.user_id,
             new_message=content,
         )
-
+        print("Running planner agent...")    
+        content = types.Content(role="user", parts=[types.Part(text=query)])
+        events = runner.run_async(
+            session_id=session.id,
+            user_id=session.user_id,
+            new_message=content,
+        )
         response = ""
         async for event in events:
             if event.content:
                 for p in event.content.parts:
                     if hasattr(p, "text"):
                         response += p.text
-        
+
         return extract_json(response)
 
-    # =============================
-    # EXECUTION
-    # =============================
     async def execute_step(self, session, step, state):
         agent_name = step["agent"]
-        message = step["message"]
-
-        print(f"\n🚀 Step {step['id']} → {agent_name}")
 
         target_agent = (
             kafka_admin_agent if agent_name == "kafka_admin_agent"
@@ -203,9 +245,12 @@ class Orchestrator:
             artifact_service=self.artifacts_service,
             session_service=self.session_service,
         )
-
-        content = types.Content(role="user", parts=[types.Part(text=message)])
-
+        print(f"Executing step {step['id']} with agent {agent_name} and message: {step['message']}")
+        content = types.Content(
+            role="user",
+            parts=[types.Part(text=json.dumps(step["message"]))]
+        )
+        print(f"Content for step {step['id']}:", content)
 
         events = runner.run_async(
             session_id=session.id,
@@ -220,13 +265,8 @@ class Orchestrator:
                     if hasattr(p, "text"):
                         result += p.text
 
-        print(f"✅ Result: {result}")
-
         state["results"][f"step_{step['id']}"] = result
 
-    # =============================
-    # VERIFY
-    # =============================
     async def verify(self, session, plan, state):
         runner = Runner(
             app_name=self.app_name,
@@ -260,19 +300,20 @@ class Orchestrator:
 
         return extract_json(response)
 
+
+orch = Orchestrator()
+
 # =============================
-# MAIN
+# API ENDPOINT
 # =============================
-async def main():
-    orch = Orchestrator()
-
-    query = "Create topic 'test_from_agent_11' if not exists with 10 partitions and RF=1 and print all topics to verify creation"
-
-    result = await orch.run(query)
-
-    print("\n🎯 FINAL STATE:")
-    print(json.dumps(result, indent=2))
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+@app.post("/run")
+async def run_query(req: QueryRequest):
+    try:
+        print("Received query:", req.query)
+        result = await orch.run(req.query)
+        return {
+            "query": req.query,
+            "result": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
