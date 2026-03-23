@@ -5,7 +5,7 @@ API_URL = "https://kafka-assistant-orchestrator-989713142030.asia-south1.run.app
 
 st.set_page_config(page_title="Kafka Orchestrator", layout="centered")
 
-st.title("⚡ Kafka Orchestrator UI")
+st.title("⚡ Kafka Assistant Chatbot")
 
 query = st.text_area("Enter your query:")
 
