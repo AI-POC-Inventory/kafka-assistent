@@ -1,7 +1,7 @@
 import streamlit as st
 import requests
 
-API_URL = "http://localhost:8080/run"  # your FastAPI endpoint
+API_URL = "https://kafka-assistant-orchestrator-989713142030.asia-south1.run.app/run"  # your FastAPI endpoint
 
 st.set_page_config(page_title="Kafka Orchestrator", layout="centered")
 
